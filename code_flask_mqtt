@@ -1,0 +1,109 @@
+import paho.mqtt.client as mqtt
+import json
+from flask import Flask, jsonify, request, render_template
+from threading import Thread
+from datetime import datetime
+import time
+
+app = Flask(__name__)
+
+# Dữ liệu ban đầu sẽ được cập nhật khi có tin nhắn MQTT
+data = {
+    "time": "",
+    "date": "",
+    "data": "",
+    "temperature": 0,
+    "humidity": 0,
+    "Hoten": "Vithanhvan"
+}
+
+BROKER = "192.168.1.100"  # Địa chỉ IP của MQTT Broker
+PORT = 1883
+TOPIC = "CamBien"  # Tên topic
+
+# Hàm callback khi kết nối thành công
+def on_connect(client, userdata, flags, rc):
+    if rc == 0:
+        print("Kết nối MQTT Broker thành công!")
+        client.subscribe(TOPIC)  # Đăng ký lắng nghe topic
+    else:
+        print(f"Kết nối thất bại. Lỗi mã: {rc}")
+
+# Hàm callback khi nhận tin nhắn
+def on_message(client, userdata, msg):
+    global data
+    try:
+        # Giải mã chuỗi JSON và cập nhật dữ liệu
+        new_data = json.loads(msg.payload.decode())
+        print(f"Nhận từ {msg.topic}: {new_data}")
+
+        # Cập nhật ngày giờ và dữ liệu
+        now = datetime.now()
+        current_date = now.strftime("%Y-%m-%d")  # Lấy ngày hiện tại
+        current_time = now.strftime("%H:%M:%S")  # Lấy giờ hiện tại
+
+        new_data["date"] = current_date
+        new_data["time"] = current_time
+
+        data.update(new_data)  # Cập nhật dữ liệu
+
+    except json.JSONDecodeError:
+        print("Không thể giải mã chuỗi JSON!")
+
+# Tạo client MQTT
+client = mqtt.Client()
+client.on_connect = on_connect
+client.on_message = on_message
+
+# Kết nối tới broker
+def start_mqtt():
+    client.connect(BROKER, PORT, 60)
+    client.loop_forever()  # Bắt đầu vòng lặp nhận tin nhắn
+
+# Tạo thread chạy MQTT
+mqtt_thread = Thread(target=start_mqtt)
+mqtt_thread.daemon = True
+mqtt_thread.start()
+
+# API cập nhật thông tin từ người dùng
+@app.route('/update_member', methods=['POST'])
+def update_member():
+    global data
+    Ho_ten = request.json.get('Hoten')
+
+    # Cập nhật dữ liệu thành viên
+    if Ho_ten:
+        data["Hoten"] = Ho_ten
+
+    # Gửi cập nhật qua MQTT
+    client.publish(TOPIC, json.dumps(data))
+
+    return jsonify({"success": True, "data": data})
+
+# API gửi dữ liệu từ ô input lên MQTT
+@app.route('/send_mqtt', methods=['POST'])
+def send_mqtt():
+    global data
+    message = request.form.get('message')  # Nhận dữ liệu từ client (dữ liệu form)
+
+    if message:
+        # Cập nhật dữ liệu
+        data["data"] = message
+        # Gửi dữ liệu qua MQTT
+        client.publish(TOPIC, json.dumps(data))
+        print(f"Đã gửi dữ liệu đến MQTT: {json.dumps(data)}")
+
+    return jsonify({"success": True, "data": data})
+
+# API lấy dữ liệu hiện tại từ MQTT
+@app.route('/data', methods=['GET'])
+def get_data():
+    return jsonify(data)
+
+# Giao diện HTML tích hợp trong Flask
+@app.route('/')
+def index():
+    return render_template('index.html', data=data)
+
+if __name__ == '__main__':
+    app.run(debug=True, host='0.0.0.0', port=5000)
